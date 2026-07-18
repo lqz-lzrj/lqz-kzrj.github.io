@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>极简肉鸽射击</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #222; touch-action: none; font-family: sans-serif; }
+        canvas { display: block; }
+        #ui { position: absolute; top: 10px; left: 10px; color: #fff; pointer-events: none; text-shadow: 1px 1px 0 #000; }
+        #btn-auto { position: absolute; bottom: 20px; right: 20px; width: 60px; height: 60px; background: rgba(255,255,255,0.2); border-radius: 50%; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 12px; border: 2px solid #fff; user-select: none; }
+        #btn-auto.on { background: rgba(0,255,0,0.4); border-color: #0f0; box-shadow: 0 0 10px #0f0; }
+        #menu { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); display: none; flex-direction: column; align-items: center; justify-content: center; color: #fff; z-index: 10; }
+        .card { background: #333; border: 1px solid #ffd700; padding: 15px; margin: 10px; width: 80%; text-align: center; border-radius: 8px; cursor: pointer; }
+        .card:active { background: #444; }
+    </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">HP: <span id="hp">100</span> | Lv: <span id="lv">1</span> | Score: <span id="sc">0</span></div>
+<div id="btn-auto">自动<br>射击</div>
+<div id="menu"><h2 id="mt">升级</h2><div id="opts"></div></div>
+
+<script>
+const c = document.getElementById('c'), ctx = c.getContext('2d');
+let W, H;
+function resize() { W = c.width = window.innerWidth; H = c.height = window.innerHeight; }
+window.addEventListener('resize', resize); resize();
+
+// 游戏状态
+const G = { state: 'play', score: 0, lv: 1, exp: 0, nextExp: 20, auto: false, frame: 0 };
+const P = { x: W/2, y: H/2, r: 12, hp: 100, maxHp: 100, spd: 3, dmg: 10, rate: 25, lastShot: 0, vx: 0, vy: 0 };
+let bullets = [], enemies = [], orbs = [], particles = [];
+
+// 输入控制
+const joy = { active: false, sx: 0, sy: 0, cx: 0, cy: 0, id: null };
+const btnAuto = document.getElementById('btn-auto');
+btnAuto.addEventListener('touchstart', (e) => { e.preventDefault(); G.auto = !G.auto; btnAuto.classList.toggle('on'); });
+
+c.addEventListener('touchstart', e => {
+    if(G.state !== 'play') return;
+    for(let t of e.changedTouches) {
+        if(!joy.active && t.clientX < W/2) {
+            joy.active = true; joy.sx = joy.cx = t.clientX; joy.sy = joy.cy = t.clientY; joy.id = t.identifier;
+        } else if (t.clientX >= W/2) shoot(t.clientX, t.clientY); // 手动射击
+    }
+});
+c.addEventListener('touchmove', e => {
+    for(let t of e.changedTouches) if(joy.active && t.identifier === joy.id) { joy.cx = t.clientX; joy.cy = t.clientY; }
+});
+c.addEventListener('touchend', e => {
+    for(let t of e.changedTouches) if(joy.active && t.identifier === joy.id) joy.active = false;
+});
+
+// 核心逻辑
+function shoot(tx, ty) {
+    const now = Date.now();
+    if(now - P.lastShot < P.rate * 15) return;
+    let angle;
+    if(tx !== undefined) {
+        angle = Math.atan2(ty - P.y, tx - P.x);
+    } else { // 自动瞄准最近
+        let target = null, minDist = Infinity;
+        enemies.forEach(e => { let d = Math.hypot(e.x-P.x, e.y-P.y); if(d<minDist){minDist=d; target=e;} });
+        if(!target) return;
+        angle = Math.atan2(target.y - P.y, target.x - P.x);
+    }
+    bullets.push({ x: P.x, y: P.y, vx: Math.cos(angle)*8, vy: Math.sin(angle)*8, life: 60 });
+    P.lastShot = now;
+}
+
+function spawn() {
+    if(G.frame % Math.max(10, 60 - G.lv*2) === 0) {
+        const side = Math.floor(Math.random()*4);
+        let x, y;
+        if(side===0) { x=Math.random()*W; y=-20; } else if(side===1) { x=W+20; y=Math.random()*H; }
+        else if(side===2) { x=Math.random()*W; y=H+20; } else { x=-20; y=Math.random()*H; }
+        enemies.push({ x, y, r: 10+Math.random()*5, spd: 1+Math.random()+G.lv*0.1, hp: 20+G.lv*5, color: `hsl(${Math.random()*60},70%,50%)` });
+    }
+}
+
+function update() {
+    if(G.state !== 'play') return;
+    G.frame++;
+    
+    // 玩家移动
+    if(joy.active) {
+        const dx = joy.cx - joy.sx, dy = joy.cy - joy.sy;
+        const dist = Math.hypot(dx, dy), maxD = 50;
+        const speedFactor = Math.min(dist, maxD) / maxD;
+        const angle = Math.atan2(dy, dx);
+        P.x += Math.cos(angle) * P.spd * speedFactor;
+        P.y += Math.sin(angle) * P.spd * speedFactor;
+        P.x = Math.max(P.r, Math.min(W-P.r, P.x));
+        P.y = Math.max(P.r, Math.min(H-P.r, P.y));
+    }
+    if(G.auto) shoot();
+
+    spawn();
+
+    // 更新实体
+    bullets.forEach((b, i) => {
+        b.x += b.vx; b.y += b.vy; b.life--;
+        if(b.life<=0 || b.x<0 || b.x>W || b.y<0 || b.y>H) bullets.splice(i, 1);
+    });
+
+    enemies.forEach((e, i) => {
+        const angle = Math.atan2(P.y - e.y, P.x - e.x);
+        e.x += Math.cos(angle) * e.spd; e.y += Math.sin(angle) * e.spd;
+        
+        // 碰撞：子弹打怪怪怪
+        bullets.forEach((b, bi) => {
+            if(Math.hypot(b.x-e.x, b.y-e.y) < e.r + 4) {
+                e.hp -= P.dmg; bullets.splice(bi, 1);
+                particles.push({x:e.x, y:e.y, vx:(Math.random()-0.5)*4, vy:(Math.random()-0.5)*4, life:10, c:'#fff'});
+                if(e.hp <= 0) {
+                    orbs.push({x:e.x, y:e.y, val:5});
+                    enemies.splice(i, 1); G.score += 10;
+                }
+            }
+        });
+
+        // 碰撞：怪撞人
+        if(Math.hypot(P.x-e.x, P.y-e.y) < P.r + e.r) {
+            P.hp -= 10; enemies.splice(i, 1);
+            if(P.hp <= 0) gameOver();
+        }
+    });
+
+    // 经验球
+    orbs.forEach((o, i) => {
+        const d = Math.hypot(P.x-o.x, P.y-o.y);
+        if(d < 100) { o.x += (P.x-o.x)*0.1; o.y += (P.y-o.y)*0.1; }
+        if(d < P.r + 5) {
+            addExp(o.val); orbs.splice(i, 1);
+        }
+    });
+
+    // 粒子
+    particles.forEach((p, i) => { p.x+=p.vx; p.y+=p.vy; p.life--; if(p.life<=0) particles.splice(i,1); });
+
+    // UI
+    document.getElementById('hp').innerText = Math.floor(P.hp);
+    document.getElementById('lv').innerText = G.lv;
+    document.getElementById('sc').innerText = G.score;
+}
+
+function addExp(val) {
+    G.exp += val;
+    if(G.exp >= G.nextExp) {
+        G.exp -= G.nextExp; G.lv++; G.nextExp = Math.floor(G.nextExp * 1.5);
+        showUpgrade();
+    }
+}
+
+function draw() {
+    ctx.fillStyle = '#222'; ctx.fillRect(0,0,W,H);
+    // 网格背景
+    ctx.strokeStyle = '#333'; ctx.lineWidth = 1;
+    for(let i=0; i<W; i+=50) { ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i,H); ctx.stroke(); }
+    for(let i=0; i<H; i+=50) { ctx.beginPath(); ctx.moveTo(0,i); ctx.lineTo(W,i); ctx.stroke(); }
+
+    orbs.forEach(o => { ctx.fillStyle='#0f0'; ctx.beginPath(); ctx.arc(o.x,o.y,4,0,Math.PI*2); ctx.fill(); });
+    bullets.forEach(b => { ctx.fillStyle='#ff0'; ctx.beginPath(); ctx.arc(b.x,b.y,3,0,Math.PI*2); ctx.fill(); });
+    enemies.forEach(e => { ctx.fillStyle=e.color; ctx.beginPath(); ctx.arc(e.x,e.y,e.r,0,Math.PI*2); ctx.fill(); });
+    particles.forEach(p => { ctx.fillStyle=p.c; ctx.fillRect(p.x,p.y,2,2); });
+    
+    // 玩家
+    ctx.fillStyle = '#00d2ff'; ctx.beginPath(); ctx.arc(P.x,P.y,P.r,0,Math.PI*2); ctx.fill();
+    
+    // 摇杆
+    if(joy.active) {
+        ctx.strokeStyle='rgba(255,255,255,0.3)'; ctx.beginPath(); ctx.arc(joy.sx,joy.sy,40,0,Math.PI*2); ctx.stroke();
+        ctx.fillStyle='rgba(255,255,255,0.5)'; ctx.beginPath(); ctx.arc(joy.cx,joy.cy,15,0,Math.PI*2); ctx.fill();
+    }
+}
+
+function loop() { update(); draw(); requestAnimationFrame(loop); }
+
+// 升级系统
+const upgrades = [
+    {n:"射速提升", f:()=>P.rate=Math.max(5, P.rate*0.8)},
+    {n:"伤害增加", f:()=>P.dmg+=5},
+    {n:"移动加速", f:()=>P.spd+=0.5},
+    {n:"生命恢复", f:()=>P.hp=Math.min(P.maxHp, P.hp+30)}
+];
+function showUpgrade() {
+    G.state = 'pause';
+    const menu = document.getElementById('menu'), opts = document.getElementById('opts');
+    opts.innerHTML = '';
+    for(let i=0; i<3; i++) {
+        const u = upgrades[Math.floor(Math.random()*upgrades.length)];
+        const div = document.createElement('div'); div.className='card';
+        div.innerText = u.n;
+        div.onclick = () => { u.f(); menu.style.display='none'; G.state='play'; };
+        opts.appendChild(div);
+    }
+    menu.style.display = 'flex';
+}
+
+function gameOver() {
+    G.state = 'over';
+    document.getElementById('mt').innerText = "游戏结束";
+    document.getElementById('opts').innerHTML = `<div class="card" onclick="location.reload()">重新开始</div>`;
+    document.getElementById('menu').style.display = 'flex';
+}
+
+loop();
+</script>
+</body>
+</html>
